@@ -2,41 +2,49 @@
 
 use yew::format::Nothing;
 use yew::services::fetch::{FetchService, FetchTask, Request, Response};
+use yew::services::ConsoleService;
 use yew::{html, Component, ComponentLink, Html, ShouldRender};
 
-struct Config {
-    name: String,
-    server_ip: String,
-}
-
-pub struct Model {
-    config: Config,
-    user_id: u32,
-    fetch_service: FetchService,
-    link: ComponentLink<Model>,
-    value: String,
-    messages: Vec<String>,
-    debug_log: Vec<String>,
-    ft: Option<FetchTask>,
-}
-
 pub enum Msg {
-    GotInput(String),
+    GotMessageInput(String),
+    GotUserNameInput(String),
+
     ConnectClicked,
     SendClicked,
     RefreshClicked,
-    ReceivedUserId(u32),
+    CountClicked,
+
+    ReceivedMessages(String),
+
     Ignore,
 }
 
-impl Model {
-    fn parse_cmd_from_args() -> Config {
+struct Config {
+    server_ip: String,
+}
+
+impl Config {
+    fn create() -> Config {
         Config {
-            name: "user0".to_string(),
             server_ip: "http://127.0.0.25:8080".to_string(),
         }
     }
+}
 
+pub struct Model {
+    console: ConsoleService,
+    config: Config,
+    fetch_service: FetchService,
+    ft: Option<FetchTask>,
+    link: ComponentLink<Model>,
+
+    counter: u32,
+    user_name: String,
+    current_message: String,
+    messages_html: String,
+}
+
+impl Model {
     fn show_messages(&self) -> Html<Self> {
         let render = |mes| {
             html! {
@@ -46,27 +54,10 @@ impl Model {
             }
         };
 
+        let messages: Vec<&str> = self.messages_html.as_str().split("<br/>").collect();
         html! {
-            { for self.messages.iter().map(render) }
+            { for messages.iter().map(render) }
         }
-    }
-
-    fn show_debug_log(&self) -> Html<Self> {
-        let render = |mes| {
-            html! {
-                <div>
-                    { mes }
-                </div>
-            }
-        };
-
-        html! {
-            { for self.debug_log.iter().map(render) }
-        }
-    }
-
-    fn log(&mut self, mes: &str) {
-        self.debug_log.push(mes.to_string());
     }
 }
 
@@ -76,69 +67,81 @@ impl Component for Model {
 
     fn create(_: Self::Properties, link: ComponentLink<Self>) -> Self {
         Model {
-            config: Model::parse_cmd_from_args(),
-            user_id: 0,
+            console: ConsoleService::new(),
+            config: Config::create(),
             fetch_service: FetchService::new(),
-            link,
-            value: "".into(),
-            messages: Vec::new(),
-            debug_log: Vec::new(),
             ft: None,
+            link,
+            counter: 0,
+            user_name: String::new(),
+            current_message: String::new(),
+            messages_html: String::new(),
         }
     }
 
     fn update(&mut self, msg: Self::Message) -> ShouldRender {
         match msg {
-            Msg::GotInput(new_value) => {
-                self.value = new_value;
+            Msg::GotUserNameInput(user_name) => {
+                self.console.log("GotUserNameInput");
+                self.user_name = user_name;
+            }
+            Msg::GotMessageInput(message) => {
+                self.console.log("GotMessageInput");
+                self.current_message = message;
             }
             Msg::ConnectClicked => {
+                self.console.log("ConnectClicked");
+                let callback = self
+                    .link
+                    .send_back(move |_: Response<Result<String, failure::Error>>| Msg::Ignore);
+
+                let url = format!("{}/connect/{}", self.config.server_ip, self.user_name);
+                self.console.log(&url);
+
+                let request = Request::get(url).body(Nothing).unwrap();
+                self.ft = Some(self.fetch_service.fetch(request, callback));
+            }
+            Msg::SendClicked => {
+                self.console.log("SendClicked");
+                let callback = self.link.send_back(move |_: Response<Nothing>| Msg::Ignore);
+
+                let url = format!(
+                    "{}/chat/send/{}/{}",
+                    self.config.server_ip,
+                    self.user_name,
+                    self.current_message.clone()
+                );
+                self.console.log(&url);
+
+                let request = Request::get(url).body(Nothing).unwrap();
+                self.ft = Some(self.fetch_service.fetch(request, callback));
+            }
+            Msg::RefreshClicked => {
+                self.console.log("RefreshClicked");
                 let callback = self.link.send_back(
                     move |response: Response<Result<String, failure::Error>>| {
                         if response.status().is_success() {
                             if let Ok(body) = response.body() {
-                                return Msg::ReceivedUserId(body.parse().unwrap());
+                                return Msg::ReceivedMessages(body.to_string());
                             }
                         }
                         Msg::Ignore
                     },
                 );
 
-                let url = format!("{}/connect/{}", self.config.server_ip, self.config.name);
-
-                let request = Request::get(url).body(Nothing).unwrap();
-                self.ft = Some(self.fetch_service.fetch(request, callback));
-            }
-            Msg::SendClicked => {
-                let callback = self.link.send_back(move |response: Response<Nothing>| {
-                    let (meta, data) = response.into_parts();
-                    println!("Response: {:?}, {:?}", meta, data);
-                    Msg::Ignore
-                });
-
-                let url = format!(
-                    "{}/chat/send/{}/{}",
-                    self.config.server_ip,
-                    self.user_id,
-                    self.value.clone()
-                );
-
-                let request = Request::get(url).body(Nothing).unwrap();
-                self.ft = Some(self.fetch_service.fetch(request, callback));
-            }
-            Msg::RefreshClicked => {
-                let callback = self
-                    .link
-                    .send_back(move |_response: Response<Nothing>| Msg::Ignore);
-
                 let url = format!("{}/chat.html", self.config.server_ip);
+                self.console.log(&url);
 
                 let request = Request::get(url).body(Nothing).unwrap();
                 self.ft = Some(self.fetch_service.fetch(request, callback));
             }
-            Msg::ReceivedUserId(id) => {
-                self.log(&format!("{}", id));
-                self.user_id = id;
+            Msg::CountClicked => {
+                self.console.log("CountClicked");
+                self.counter += 1;
+            }
+            Msg::ReceivedMessages(html) => {
+                self.console.log("ReceivedMessages");
+                self.messages_html = html;
             }
             Msg::Ignore => (),
         }
@@ -149,16 +152,27 @@ impl Component for Model {
         html! {
             <div>
                 <div>
-                    { self.user_id }
+                    { self.counter }
+                </div>
+                <div>
+                    { self.config.server_ip.clone() }
                 </div>
                 <div>
                     { self.show_messages() }
                 </div>
                 <div>
+                    { "User name: " }
+                    <textarea rows=1
+                        value=&self.user_name
+                        oninput=|e| Msg::GotUserNameInput(e.value)
+                        placeholder="User name">
+                    </textarea>
+                </div>
+                <div>
                     <textarea rows=5
-                        value=&self.value
-                        oninput=|e| Msg::GotInput(e.value)
-                        placeholder="placeholder">
+                        value=&self.current_message
+                        oninput=|e| Msg::GotMessageInput(e.value)
+                        placeholder="Message">
                     </textarea>
                 </div>
                 <div>
@@ -171,7 +185,7 @@ impl Component for Model {
                     <button onclick=|_| Msg::RefreshClicked>{ "Refresh" }</button>
                 </div>
                 <div>
-                    { self.show_debug_log() }
+                    <button onclick=|_| Msg::CountClicked>{ "Count" }</button>
                 </div>
             </div>
         }
